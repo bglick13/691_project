@@ -1,0 +1,16 @@
+
+.idea/
+
+__pycache__/
+
+data/ml-20m/
+
+data/
+
+*.png
+
+*.torch
+
+*.pickle
+
+*.pdf
