@@ -120,6 +120,8 @@ class MovieSequenceDataset(Dataset):
         self.gb = self.test_df.groupby('userId')
         self.users = self.test_df['userId'].values
 
+# TODO: bigger output networks and multiply by embedding.T
+# TODO: Implement swoosh activation for funsies
 
 class MovieSequenceEncoder(torch.nn.Module):
     def __init__(self, sequence_length, n_movies, embedding_dim, n_head, ff_dim, n_encoder_layers, n_ratings=None,
@@ -196,7 +198,7 @@ class MovieSequenceEncoder(torch.nn.Module):
         :return:
         """
         self.train()
-        lr = train_kwargs.get('lr', 0.001)
+        lr = train_kwargs.get('lr', 1.0e-4)
         epochs = train_kwargs.get('epochs', 1)
         mask_pct = train_kwargs.get('mask_pct', 0.1)
         print_iter = train_kwargs.get('print_iter', 10)
