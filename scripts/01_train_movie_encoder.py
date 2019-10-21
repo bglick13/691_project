@@ -9,8 +9,8 @@ from torch.utils.data import DataLoader
 
 
 if __name__ == '__main__':
-    PCT_OF_DATA = 0.2
-    SEQUENCE_LENGTH = [50]
+    PCT_OF_DATA = 0.5
+    SEQUENCE_LENGTH = [200]
     ratings = pd.read_csv('../data/ml-20m/ratings.csv')
     np.random.seed(42)
     idxs = np.random.choice(range(len(ratings)), int(len(ratings) * PCT_OF_DATA), replace=False)
@@ -39,7 +39,7 @@ if __name__ == '__main__':
     #     torch.save(model, f'{model.model_name}.torch')
 
     for sl in SEQUENCE_LENGTH:
-        dataset = MovieSequenceDataset(ratings, sequence_length=sl, test_pct=0)
+        dataset = MovieSequenceDataset(ratings, sequence_length=sl, test_pct=0.1)
         dataset.train()
 
         model: MovieSequenceEncoder = MovieSequenceEncoder(sequence_length=sl,
@@ -47,10 +47,10 @@ if __name__ == '__main__':
                                                            embedding_dim=embedding_dim, n_head=n_head, ff_dim=ff_dim,
                                                            n_encoder_layers=n_encoder_layers,
                                                            n_ratings=len(dataset.ratings_le.classes_),
-                                                           model_name=f'movie_pretrain_with_ratings_{sl}')
+                                                           model_name=f'movie_pretrain_with_ratings_{sl}_big_data')
         print(f'Number of trainable params: {sum(p.numel() for p in model.parameters() if p.requires_grad)}')
         # 1) Train without ratings as a baseline
-        batch_size = 512
+        batch_size = 64
         dl = DataLoader(dataset, batch_size=batch_size, num_workers=2, shuffle=True)
         model.cuda()
         model.pretrain(dl, lr=1.0e-4, print_iter=100, epochs=10, mask_pct=0.1)

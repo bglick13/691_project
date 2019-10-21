@@ -123,6 +123,19 @@ class MovieSequenceDataset(Dataset):
 # TODO: bigger output networks and multiply by embedding.T
 # TODO: Implement swoosh activation for funsies
 
+
+class Swish(torch.nn.Module):
+    def __init__(self):
+        super().__init__()
+
+    def forward(self, x):
+        return x * F.sigmoid(x)
+
+
+def swish(x):
+    return x * F.sigmoid(x)
+
+
 class MovieSequenceEncoder(torch.nn.Module):
     def __init__(self, sequence_length, n_movies, embedding_dim, n_head, ff_dim, n_encoder_layers, n_ratings=None,
                  model_name='movie_encoder'):
@@ -139,14 +152,21 @@ class MovieSequenceEncoder(torch.nn.Module):
         if n_ratings is not None:
             self.RATING_CLS = n_ratings + 1
             self.rating_embedding_layer = torch.nn.Embedding(n_ratings+3, embedding_dim, padding_idx=n_ratings)
-            self.masked_rating_output_layer = torch.nn.Linear(embedding_dim, n_ratings)
+
+            self.masked_rating_output = torch.nn.Sequential(torch.nn.Linear(embedding_dim, embedding_dim),
+                                                            Swish,
+                                                            torch.nn.Linear(embedding_dim, n_ratings))
 
         self.embedding_layer = torch.nn.Embedding(n_movies+3, embedding_dim, padding_idx=n_movies)
 
         self.encoder_layer = torch.nn.TransformerEncoderLayer(embedding_dim, n_head, ff_dim)
         self.encoder = torch.nn.TransformerEncoder(self.encoder_layer, n_encoder_layers)
 
-        self.masked_movie_output_layer = torch.nn.Linear(embedding_dim, n_movies)
+        self.masked_movie_output = torch.nn.Sequential(torch.nn.Linear(embedding_dim, embedding_dim),
+                                                       Swish,
+                                                       torch.nn.Linear(embedding_dim, n_movies))
+
+        # self.masked_movie_output_bias = torch.nn.Parameter(torch.zeros(n_movies))
         self.matching_output_layer = torch.nn.Linear(embedding_dim, 2)
 
         self.pe = PositionalEncoding(embedding_dim, 0.1)
@@ -247,14 +267,16 @@ class MovieSequenceEncoder(torch.nn.Module):
 
                 # Masked movie predictions
                 movies_to_predict = out[movie_masks]
-                movie_masked_pred = self.masked_movie_output_layer(movies_to_predict)
+                movie_masked_pred = self.masked_movie_output(movies_to_predict)
+
                 movie_mask_tgt_batch = m_tgt[movie_masks].cuda()
                 movie_mask_batch_loss = mask_loss(movie_masked_pred, movie_mask_tgt_batch)
 
                 if r is not None:
                     # Masked rating predictions
                     ratings_to_predict = out[ratings_mask]
-                    ratings_masked_pred = self.masked_rating_output_layer(ratings_to_predict)
+                    ratings_masked_pred = self.masked_rating_output(ratings_to_predict)
+
                     ratings_mask_tgt_batch = r_tgt[ratings_mask].cuda()
                     ratings_mask_batch_loss = mask_loss(ratings_masked_pred, ratings_mask_tgt_batch)
                 else:
