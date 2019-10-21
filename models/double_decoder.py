@@ -132,39 +132,60 @@ class Swish(torch.nn.Module):
         return x * F.sigmoid(x)
 
 
-def swish(x):
-    return x * F.sigmoid(x)
+# def swish(x):
+#     return x * F.sigmoid(x)
+
+
+# TODO: Implement user embedding model as a residual block that sits at the end of a trained model
+class UserResidualBlock(torch.nn.Module):
+    def __init__(self, embedding_dim, n_users, padding_idx):
+        super().__init__()
+        self.embedding_dim = embedding_dim
+        self.n_users = n_users
+        self.padding_idx = padding_idx
+        self.embedding = torch.nn.Embedding(n_users+3, embedding_dim, padding_idx=padding_idx)
+        self.dense = torch.nn.Linear(embedding_dim, embedding_dim)
+
+    def forward(self, x):
+        h = self.embedding(x)
 
 
 class MovieSequenceEncoder(torch.nn.Module):
-    def __init__(self, sequence_length, n_movies, embedding_dim, n_head, ff_dim, n_encoder_layers, n_ratings=None,
+    def __init__(self, sequence_length, embedding_dim, n_head, ff_dim, n_encoder_layers,
+                 dataset: MovieSequenceDataset,
+                 use_ratings=None, use_users=None,
                  model_name='movie_encoder'):
         super().__init__()
         self.model_name = model_name
-        self.MOVIE_PADDING_IDX = n_movies
-        self.MOVIE_CLS = n_movies + 1
 
-        self.n_ratings = n_ratings
-        self.RATING_PADDING_IDX = n_ratings
+        self.dataset = dataset
+        self.use_ratings = use_ratings
+        self.use_users = use_users
         self.sequence_length = sequence_length
         self.embedding_dim = embedding_dim
 
-        if n_ratings is not None:
-            self.RATING_CLS = n_ratings + 1
-            self.rating_embedding_layer = torch.nn.Embedding(n_ratings+3, embedding_dim, padding_idx=n_ratings)
+        if use_ratings is not None:
+            self.rating_embedding_layer = torch.nn.Embedding(len(self.dataset.ratings_le.classes_) + 3, embedding_dim,
+                                                             padding_idx=dataset.RATING_PADDING_IDX)
 
             self.masked_rating_output = torch.nn.Sequential(torch.nn.Linear(embedding_dim, embedding_dim),
-                                                            Swish,
-                                                            torch.nn.Linear(embedding_dim, n_ratings))
+                                                            Swish(),
+                                                            torch.nn.Linear(embedding_dim, len(self.dataset.ratings_le.classes_)))
+        if use_users is not None:
+            self.user_embedding_layer = torch.nn.Embedding(len(self.dataset.user_le.classes_) + 3, embedding_dim,
+                                                           padding_idx=dataset.USER_PADDING_IDX)
+            self.user_block = torch.nn.Sequential(self.user_embedding_layer, torch.nn.ReLU(),
+                                                  torch.nn.Linear(embedding_dim, embedding_dim), torch.nn.ReLU())
 
-        self.embedding_layer = torch.nn.Embedding(n_movies+3, embedding_dim, padding_idx=n_movies)
+        self.embedding_layer = torch.nn.Embedding(len(self.dataset.movie_le.classes_)+3, embedding_dim,
+                                                  padding_idx=dataset.MOVIE_PADDING_IDX)
 
         self.encoder_layer = torch.nn.TransformerEncoderLayer(embedding_dim, n_head, ff_dim)
         self.encoder = torch.nn.TransformerEncoder(self.encoder_layer, n_encoder_layers)
 
         self.masked_movie_output = torch.nn.Sequential(torch.nn.Linear(embedding_dim, embedding_dim),
-                                                       Swish,
-                                                       torch.nn.Linear(embedding_dim, n_movies))
+                                                       Swish(),
+                                                       torch.nn.Linear(embedding_dim, len(self.dataset.movie_le.classes_)))
 
         # self.masked_movie_output_bias = torch.nn.Parameter(torch.zeros(n_movies))
         self.matching_output_layer = torch.nn.Linear(embedding_dim, 2)
@@ -233,8 +254,10 @@ class MovieSequenceEncoder(torch.nn.Module):
             step = 0
             for m, r, u in tqdm(dataloader):
 
-                if self.n_ratings is None:
+                if self.use_ratings is None:
                     r = None
+                if self.use_users is None:
+                    u = None
                 opt.zero_grad()
 
                 # Randomly shuffle the second half of the sequences for half the batch
@@ -246,24 +269,34 @@ class MovieSequenceEncoder(torch.nn.Module):
                     shuffled_ratings = r[is_correct_matchup == 0, (S // 2) + 2: S + 2]
                     shuffled_ratings = shuffled_ratings[torch.randperm(shuffled_ratings.size()[0])]
                     r[is_correct_matchup == 0, (S // 2) + 2: S + 2] = shuffled_ratings
+                if u is not None:
+                    shuffled_users = u[is_correct_matchup == 0, (S // 2) + 2: S + 2]
+                    shuffled_users = shuffled_users[torch.randperm(shuffled_users.size()[0])]
+                    u[is_correct_matchup == 0, (S // 2) + 2: S + 2] = shuffled_users
 
                 m_tgt = m.clone().detach()
                 if r is not None:
                     r_tgt = r.clone().detach()
+                if u is not None:
+                    u_tgt = u.clone().detach()
 
                 # Generate masks for random movies
                 movie_masks = self._gen_random_masks(m, mask_pct)
-                movie_masks[m >= self.MOVIE_PADDING_IDX] = 0
-                m[movie_masks] = self.MOVIE_PADDING_IDX
+                movie_masks[m >= self.dataset.MOVIE_PADDING_IDX] = 0
+                m[movie_masks] = self.dataset.MOVIE_PADDING_IDX
                 m = m.cuda()
 
                 if r is not None:
                     ratings_mask = self._gen_random_masks(r, mask_pct)
-                    ratings_mask[r >= self.RATING_PADDING_IDX] = 0
-                    r[ratings_mask] = self.RATING_PADDING_IDX
+                    ratings_mask[r >= self.dataset.RATING_PADDING_IDX] = 0
+                    r[ratings_mask] = self.dataset.RATING_PADDING_IDX
                     r = r.cuda()
 
                 out = self.forward(m, ratings=r)  # -> shape (batch_size, sequence_length, embedding_dim)
+
+                if u is not None:
+                    user_embed = self.user_block(u)
+                    out += user_embed
 
                 # Masked movie predictions
                 movies_to_predict = out[movie_masks]

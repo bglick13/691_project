@@ -9,7 +9,7 @@ from torch.utils.data import DataLoader
 
 
 if __name__ == '__main__':
-    PCT_OF_DATA = 0.5
+    PCT_OF_DATA = 0.15
     SEQUENCE_LENGTH = [200]
     ratings = pd.read_csv('../data/ml-20m/ratings.csv')
     np.random.seed(42)
@@ -43,10 +43,11 @@ if __name__ == '__main__':
         dataset.train()
 
         model: MovieSequenceEncoder = MovieSequenceEncoder(sequence_length=sl,
-                                                           n_movies=len(dataset.movie_le.classes_),
+                                                           dataset=dataset,
                                                            embedding_dim=embedding_dim, n_head=n_head, ff_dim=ff_dim,
                                                            n_encoder_layers=n_encoder_layers,
-                                                           n_ratings=len(dataset.ratings_le.classes_),
+                                                           use_ratings=True,
+                                                           use_users=None,
                                                            model_name=f'movie_pretrain_with_ratings_{sl}_big_data')
         print(f'Number of trainable params: {sum(p.numel() for p in model.parameters() if p.requires_grad)}')
         # 1) Train without ratings as a baseline
