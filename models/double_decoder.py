@@ -116,6 +116,7 @@ class MovieSequenceDataset(Dataset):
         self.users = self.train_df['userId'].values
 
     def test(self):
+        self.test_df['index'] = range(len(self.test_df))
         self.df = self.test_df
         self.gb = self.test_df.groupby('userId')
         self.users = self.test_df['userId'].values
@@ -153,7 +154,7 @@ class UserResidualBlock(torch.nn.Module):
 class MovieSequenceEncoder(torch.nn.Module):
     def __init__(self, sequence_length, embedding_dim, n_head, ff_dim, n_encoder_layers,
                  dataset: MovieSequenceDataset,
-                 use_ratings=None, use_users=None,
+                 use_ratings=False, use_users=False,
                  model_name='movie_encoder'):
         super().__init__()
         self.model_name = model_name
@@ -164,14 +165,14 @@ class MovieSequenceEncoder(torch.nn.Module):
         self.sequence_length = sequence_length
         self.embedding_dim = embedding_dim
 
-        if use_ratings is not None:
+        if use_ratings:
             self.rating_embedding_layer = torch.nn.Embedding(len(self.dataset.ratings_le.classes_) + 3, embedding_dim,
                                                              padding_idx=dataset.RATING_PADDING_IDX)
 
             self.masked_rating_output = torch.nn.Sequential(torch.nn.Linear(embedding_dim, embedding_dim),
                                                             Swish(),
                                                             torch.nn.Linear(embedding_dim, len(self.dataset.ratings_le.classes_)))
-        if use_users is not None:
+        if use_users:
             self.user_embedding_layer = torch.nn.Embedding(len(self.dataset.user_le.classes_) + 3, embedding_dim,
                                                            padding_idx=dataset.USER_PADDING_IDX)
             self.user_block = torch.nn.Sequential(self.user_embedding_layer, torch.nn.ReLU(),
@@ -230,6 +231,65 @@ class MovieSequenceEncoder(torch.nn.Module):
         mask = torch.BoolTensor(mask)
         return mask
 
+    def next_movie_prediction(self, dataloader: DataLoader):
+        self.eval()
+        history = dict(movie_pred=[])
+        if self.use_ratings:
+            history['rating_pred'] = []
+        for m, r, u in tqdm(dataloader):
+            m.requires_grad = False
+            r.requires_grad = False
+            u.requires_grad = False
+            if not self.use_ratings:
+                r = None
+            if not self.use_users:
+                u = None
+
+            m_tgt = m.clone().detach()
+            if r is not None:
+                r_tgt = r.clone().detach()
+            if u is not None:
+                u_tgt = u.clone().detach()
+
+            # Generate masks for random movies
+            movie_masks = np.zeros(m.shape)
+            movie_masks[range(len(m)), -2] = 1
+            # This is to make sure we aren't predicting on legitimate padding (i.e., from sequence lengths not being long enough)
+            movie_masks[m >= self.dataset.MOVIE_PADDING_IDX] = 0
+            movie_masks = torch.BoolTensor(movie_masks)
+            m[movie_masks] = self.dataset.MOVIE_PADDING_IDX
+            m = torch.LongTensor(m).cuda()
+
+            if r is not None:
+                r = r.cuda()
+
+            out = self.forward(m, ratings=r)  # -> shape (batch_size, sequence_length, embedding_dim)
+
+            if u is not None:
+                user_embed = self.user_block(u.cuda())
+                out += user_embed
+
+            # Masked movie predictions
+            movies_to_predict = out[movie_masks]
+            movie_masked_pred = self.masked_movie_output(movies_to_predict).detach().cpu().numpy().argmax(-1)
+
+            movie_mask_tgt_batch = m_tgt[movie_masks].numpy()
+            movie_is_correct = movie_masked_pred == movie_mask_tgt_batch
+
+            if r is not None:
+                # Masked rating predictions
+                ratings_to_predict = out[movie_masks]
+                ratings_masked_pred = self.masked_rating_output(ratings_to_predict).detach().cpu().numpy().argmax(-1)
+
+                ratings_mask_tgt_batch = r_tgt[movie_masks].numpy()
+                rating_is_correct = ratings_masked_pred == ratings_mask_tgt_batch
+
+            history['movie_pred'].extend(movie_is_correct)
+
+            if r is not None:
+                history['rating_pred'].extend(rating_is_correct)
+        return history
+
     def pretrain(self, dataloader: DataLoader, **train_kwargs):
         """
 
@@ -249,14 +309,16 @@ class MovieSequenceEncoder(torch.nn.Module):
         mask_loss = torch.nn.CrossEntropyLoss(reduction='mean')
         matching_loss = torch.nn.CrossEntropyLoss(reduction='mean')
         history = dict(epoch=[], step=[], masked_movie_loss=[], masked_rating_loss=[], matching_loss=[], loss=[],
-                       masked_movie_acc=[], masked_rating_acc=[], matching_acc=[])
+                       masked_movie_acc=[], masked_rating_acc=[], matching_acc=[], top5_acc=[])
+        if self.use_users:
+            history['user_activations'] = []
         for epoch in tqdm(range(epochs)):
             step = 0
             for m, r, u in tqdm(dataloader):
 
-                if self.use_ratings is None:
+                if not self.use_ratings:
                     r = None
-                if self.use_users is None:
+                if not self.use_users:
                     u = None
                 opt.zero_grad()
 
@@ -295,8 +357,11 @@ class MovieSequenceEncoder(torch.nn.Module):
                 out = self.forward(m, ratings=r)  # -> shape (batch_size, sequence_length, embedding_dim)
 
                 if u is not None:
-                    user_embed = self.user_block(u)
+                    user_embed = self.user_block(u.cuda())
                     out += user_embed
+                    act = user_embed.mean().detach().cpu().numpy()
+                    print(act)
+                    history['user_activations'].append(act)
 
                 # Masked movie predictions
                 movies_to_predict = out[movie_masks]
@@ -346,18 +411,20 @@ class MovieSequenceEncoder(torch.nn.Module):
 
                     history['epoch'].append(epoch)
                     history['step'].append(step)
-                    history['loss'].append(batch_loss)
-                    history['masked_movie_loss'].append(movie_mask_batch_loss)
+                    history['loss'].append(batch_loss.detach().cpu().numpy())
+                    history['masked_movie_loss'].append(movie_mask_batch_loss.detach().cpu().numpy())
                     history['masked_movie_acc'].append(movie_batch_acc)
-                    history['matching_loss'].append(is_correct_loss)
+                    history['matching_loss'].append(is_correct_loss.detach().cpu().numpy())
                     history['matching_acc'].append(matching_acc)
+                    history['top5_acc'].append(top_5_acc)
                     if r is not None:
-                        history['masked_rating_loss'].append(ratings_mask_batch_loss)
+                        history['masked_rating_loss'].append(ratings_mask_batch_loss.detach().cpu().numpy())
                         history['masked_rating_acc'].append(rating_batch_acc)
                     print(
                         f'Epoch: {epoch}, Step: {step}, Loss: {batch_loss}, Movie Acc:'
                         f'{movie_batch_acc}, Top 5 Acc: {top_5_acc}, Matching Acc: {matching_acc}, Rating Acc: {rating_batch_acc}')
                 step += 1
+                torch.cuda.empty_cache()
             torch.save(self, f'{self.model_name}_checkpoint_{epoch}.torch')
             with open(f'history_{self.model_name}_{epoch}.pickle', 'wb') as f:
                 pickle.dump(history, f)

@@ -8,9 +8,73 @@ import torch
 from torch.utils.data import DataLoader
 
 
+def train_baseline():
+    model: MovieSequenceEncoder = MovieSequenceEncoder(sequence_length=SEQUENCE_LENGTH,
+                                                       dataset=dataset,
+                                                       embedding_dim=embedding_dim, n_head=n_head, ff_dim=ff_dim,
+                                                       n_encoder_layers=n_encoder_layers,
+                                                       use_ratings=False,
+                                                       use_users=False,
+                                                       model_name=f'baseline_{SEQUENCE_LENGTH}')
+    print(f'Number of trainable params: {sum(p.numel() for p in model.parameters() if p.requires_grad)}')
+    # 1) Train without ratings as a baseline
+    dl = DataLoader(dataset, batch_size=batch_size, num_workers=2, shuffle=True)
+    model.cuda()
+    model.pretrain(dl, lr=lr, print_iter=100, epochs=epochs, mask_pct=mask_pct)
+    torch.save(model, f'baseline.torch')
+
+
+def train_with_ratings():
+    model: MovieSequenceEncoder = MovieSequenceEncoder(sequence_length=SEQUENCE_LENGTH,
+                                                       dataset=dataset,
+                                                       embedding_dim=embedding_dim, n_head=n_head, ff_dim=ff_dim,
+                                                       n_encoder_layers=n_encoder_layers,
+                                                       use_ratings=True,
+                                                       use_users=False,
+                                                       model_name=f'ratings_{SEQUENCE_LENGTH}')
+    print(f'Number of trainable params: {sum(p.numel() for p in model.parameters() if p.requires_grad)}')
+    # 1) Train without ratings as a baseline
+    dl = DataLoader(dataset, batch_size=batch_size, num_workers=2, shuffle=True)
+    model.cuda()
+    model.pretrain(dl, lr=lr, print_iter=100, epochs=epochs, mask_pct=mask_pct)
+    torch.save(model, f'ratings.torch')
+
+
+def train_with_users():
+    model: MovieSequenceEncoder = MovieSequenceEncoder(sequence_length=SEQUENCE_LENGTH,
+                                                       dataset=dataset,
+                                                       embedding_dim=embedding_dim, n_head=n_head, ff_dim=ff_dim,
+                                                       n_encoder_layers=n_encoder_layers,
+                                                       use_ratings=False,
+                                                       use_users=True,
+                                                       model_name=f'users_{SEQUENCE_LENGTH}')
+    print(f'Number of trainable params: {sum(p.numel() for p in model.parameters() if p.requires_grad)}')
+    # 1) Train without ratings as a baseline
+    dl = DataLoader(dataset, batch_size=batch_size, num_workers=2, shuffle=True)
+    model.cuda()
+    model.pretrain(dl, lr=lr, print_iter=100, epochs=epochs, mask_pct=mask_pct)
+    torch.save(model, f'users.torch')
+
+
+def train_with_both(f='both'):
+    model: MovieSequenceEncoder = MovieSequenceEncoder(sequence_length=SEQUENCE_LENGTH,
+                                                       dataset=dataset,
+                                                       embedding_dim=embedding_dim, n_head=n_head, ff_dim=ff_dim,
+                                                       n_encoder_layers=n_encoder_layers,
+                                                       use_ratings=True,
+                                                       use_users=True,
+                                                       model_name=f'both_{SEQUENCE_LENGTH}')
+    print(f'Number of trainable params: {sum(p.numel() for p in model.parameters() if p.requires_grad)}')
+    # 1) Train without ratings as a baseline
+    dl = DataLoader(dataset, batch_size=batch_size, num_workers=2, shuffle=True)
+    model.cuda()
+    model.pretrain(dl, lr=lr, print_iter=100, epochs=epochs, mask_pct=mask_pct)
+    torch.save(model, f'{f}.torch')
+
+
 if __name__ == '__main__':
     PCT_OF_DATA = 0.15
-    SEQUENCE_LENGTH = [200]
+    SEQUENCE_LENGTH = 50
     ratings = pd.read_csv('../data/ml-20m/ratings.csv')
     np.random.seed(42)
     idxs = np.random.choice(range(len(ratings)), int(len(ratings) * PCT_OF_DATA), replace=False)
@@ -19,40 +83,19 @@ if __name__ == '__main__':
     n_head = 8
     ff_dim = 1024
     n_encoder_layers = 4
+    batch_size = 512
+    lr = 1.0e-4
+    epochs = 20
+    mask_pct = 0.1
 
-    # for sl in SEQUENCE_LENGTH:
-    #     dataset = MovieSequenceDataset(ratings, sequence_length=sl, test_pct=0)
-    #     dataset.train()
-    #
-    #     model: MovieSequenceEncoder = MovieSequenceEncoder(sequence_length=sl,
-    #                                                        n_movies=len(dataset.movie_le.classes_),
-    #                                                        embedding_dim=embedding_dim, n_head=n_head, ff_dim=ff_dim,
-    #                                                        n_encoder_layers=n_encoder_layers,
-    #                                                        n_ratings=None,
-    #                                                        model_name=f'movie_pretrain_no_ratings_{sl}')
-    #     print(f'Number of trainable params: {sum(p.numel() for p in model.parameters() if p.requires_grad)}')
-    #     # 1) Train without ratings as a baseline
-    #     batch_size = 512
-    #     dl = DataLoader(dataset, batch_size=batch_size, num_workers=2, shuffle=True)
-    #     model.cuda()
-    #     model.pretrain(dl, lr=1.0e-4, print_iter=100, epochs=10, mask_pct=0.5)
-    #     torch.save(model, f'{model.model_name}.torch')
+    try:
+        dataset = torch.load('dataset.torch')
+    except:
+        dataset = MovieSequenceDataset(ratings, sequence_length=SEQUENCE_LENGTH, test_pct=0.1)
+        torch.save(dataset, 'dataset.torch')
+    dataset.train()
 
-    for sl in SEQUENCE_LENGTH:
-        dataset = MovieSequenceDataset(ratings, sequence_length=sl, test_pct=0.1)
-        dataset.train()
-
-        model: MovieSequenceEncoder = MovieSequenceEncoder(sequence_length=sl,
-                                                           dataset=dataset,
-                                                           embedding_dim=embedding_dim, n_head=n_head, ff_dim=ff_dim,
-                                                           n_encoder_layers=n_encoder_layers,
-                                                           use_ratings=True,
-                                                           use_users=None,
-                                                           model_name=f'movie_pretrain_with_ratings_{sl}_big_data')
-        print(f'Number of trainable params: {sum(p.numel() for p in model.parameters() if p.requires_grad)}')
-        # 1) Train without ratings as a baseline
-        batch_size = 64
-        dl = DataLoader(dataset, batch_size=batch_size, num_workers=2, shuffle=True)
-        model.cuda()
-        model.pretrain(dl, lr=1.0e-4, print_iter=100, epochs=10, mask_pct=0.1)
-        torch.save(model, f'{model.model_name}.torch')
+    # train_baseline()
+    # train_with_ratings()
+    # train_with_users()
+    train_with_both('track_user_activations_both')
